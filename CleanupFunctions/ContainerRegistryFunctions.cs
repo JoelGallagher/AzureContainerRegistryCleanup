@@ -9,15 +9,14 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using Task = System.Threading.Tasks.Task;
 
 namespace CleanupFunctions
 {
-	public static class Function1
+	public static class ContainerRegistryFunctions
 	{
 		private static AzureConfig _azureConfig;
 
-		[FunctionName("Function1")]
+		[FunctionName("CleanupRegistry")]
 		public static async Task<IActionResult> Run(
 			[HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
 			ILogger log)
@@ -45,45 +44,40 @@ namespace CleanupFunctions
 		{
 			var result = new CleanupResult();
 
-			// Get the service endpoint from the environment
-			Uri endpoint = new Uri(_azureConfig.RegistryEndpoint);
-
 			// Create a new ContainerRegistryClient
+			Uri endpoint = new Uri(_azureConfig.RegistryEndpoint);
 			TokenCredential azureCredential = new ClientSecretCredential(_azureConfig.TenantId, _azureConfig.ClientId, _azureConfig.ClientSecret);
-
 			ContainerRegistryClient client = new ContainerRegistryClient(endpoint, azureCredential);
 
 			var targetDate = DateTime.UtcNow.AddDays(-_azureConfig.RetentionDays);
 
 			Console.WriteLine($"Searching for artifacts older than {targetDate}");
 
-			// Iterate through repositories
+			// Loop repos
 			var repositoryNames = client.GetRepositoryNamesAsync();
 			await foreach (string repositoryName in repositoryNames)
 			{
 				ContainerRepository repository = client.GetRepository(repositoryName);
 
-				// Obtain the images ordered from newest to oldest
+				// Get images, new => old
 				var imageManifests = repository.GetAllManifestPropertiesAsync(manifestOrder: ArtifactManifestOrder.LastUpdatedOnDescending);
 
 				// Loop Images
 				await foreach (ArtifactManifestProperties imageManifest in imageManifests)
 				{
-					//Console.WriteLine($"Inspecting image with digest {imageManifest.Digest}.");
+					RegistryArtifact image = repository.GetArtifact(imageManifest.Digest);
 
 					if (imageManifest.LastUpdatedOn < targetDate)
 					{
-						//Console.WriteLine($"Deleting old image {imageManifest.Digest}. (Date {imageManifest.LastUpdatedOn})");
-
 						result.DeletedImages.Add(imageManifest.Digest);
 
 						foreach (var tagName in imageManifest.Tags)
 						{
-							Console.WriteLine($"      * deleting tag {imageManifest.RepositoryName}:{tagName}");
-							//await image.DeleteTagAsync(tagName); // TODO
+							Console.WriteLine($"Deleting tag {imageManifest.RepositoryName}:{tagName}");
+							await image.DeleteTagAsync(tagName);
 						}
 
-						// await image.DeleteAsync(); // TODO
+						await image.DeleteAsync();
 					}
 					else
 					{   // safe to ignore
